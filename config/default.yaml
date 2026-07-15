@@ -1,0 +1,20 @@
+encoder: vinai/phobert-base       # swap to vinai/visobert or others to compare
+max_len: 256
+batch: 32
+epochs: 15
+lr: 2.0e-5
+warmup: 0.1
+seed: 42
+patience: 4
+augment_p: 0.5                    # train_fused.py only
+
+paths:
+  data_dir: data/raw
+  baseline_out: checkpoints/baseline.pt
+  fused_out: checkpoints/fused.pt
+
+char_cnn:
+  vocab: 256
+  emb: 64
+  channels: 128
+  kernels: [2, 3, 4]
