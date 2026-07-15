@@ -23,6 +23,8 @@ for the robustness-delta *evaluation*, build a separate, fixed perturbed copy
 of test (see `augment_fixed` / evaluate_robustness in train_fused.py) so the
 comparison is reproducible across runs.
 """
+import json
+import os
 import random
 import re
 import unicodedata
@@ -36,22 +38,9 @@ _ADJACENT = {  # rough QWERTY adjacency over ASCII base letters (see caveat abov
     'n': 'bhjm', 'm': 'njk',
 }
 
-_TEENCODE = {  # small hand-picked set -- audit against real data, see caveat
-    "không": ["ko", "k", "hong", "khum"],
-    "được": ["dc", "đc", "dk"],
-    "biết": ["bit", "bt"],
-    "rất": ["r"],
-    "vậy": ["v", "z"],
-    "gì": ["j"],
-    "giờ": ["h"],
-    "một": ["1"],
-    "hai": ["2"],
-    "yêu": ["iu"],
-    "anh": ["a"],
-    "em": ["e"],
-    "quá": ["wa", "qa"],
-    "trời": ["troi"],
-}
+_TEENCODE_PATH = os.path.join(os.path.dirname(__file__), "teencode_map.json")
+with open(_TEENCODE_PATH, encoding="utf-8") as _fh:
+    _TEENCODE = json.load(_fh)  # small hand-picked set -- audit against real data, see caveat
 _TEENCODE_RE = re.compile(
     "|".join(re.escape(k) for k in sorted(_TEENCODE, key=len, reverse=True)),
     re.IGNORECASE,
@@ -114,13 +103,23 @@ def augment(text: str, p: float = 0.5) -> str:
     return text
 
 
-def augment_fixed(text: str, seed: int = 0) -> str:
+def augment_fixed(text: str, seed: int = 0, level: float = 0.5) -> str:
     """Deterministic augmentation for building a reproducible perturbed
-    EVAL set (robustness-delta measurement). Always applies all 3 ops in a
-    fixed order so the same input always produces the same output,
-    independent of global random state."""
+    EVAL set (robustness-delta measurement). Always applies ops in a fixed
+    order so the same input always produces the same output, independent of
+    global random state.
+
+    `level` in [0, 1] scales perturbation intensity for the severity sweep
+    (evaluate_robustness.py --perturb_level): scales the typo rate
+    (0.05-0.30) and, above level=0.5, also applies teencode (below that,
+    only typo+tone_drop -- teencode is a more disruptive, all-or-nothing
+    substitution so it's reserved for higher severity levels).
+    """
     rng_state = random.getstate()
-    random.seed(hash((text, seed)) & 0xFFFFFFFF)
-    out = teencode(tone_drop(typo(text, rate=0.10)))
+    random.seed(hash((text, seed, level)) & 0xFFFFFFFF)
+    typo_rate = 0.05 + level * 0.25
+    out = tone_drop(typo(text, rate=typo_rate))
+    if level > 0.5:
+        out = teencode(out)
     random.setstate(rng_state)
     return out

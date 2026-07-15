@@ -1,0 +1,26 @@
+name: viet-absa
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch>=2.0
+  - pytorch-cuda=11.8    # match to your GPU/driver; use cpuonly instead if no GPU
+  - numpy>=1.24
+  - pip
+  - pip:
+      - transformers>=4.30
+      - scikit-learn>=1.2
+      - underthesea>=6.0
+      - pyyaml>=6.0
+      - matplotlib>=3.7
+
+# Usage:
+#   conda env create -f environment.yaml
+#   conda activate viet-absa
+#
+# If you don't have a CUDA GPU (or are on Colab, which manages CUDA itself),
+# use requirements.txt + pip instead -- this file is for a local/lab machine
+# where you want exact, locked reproducibility across runs.

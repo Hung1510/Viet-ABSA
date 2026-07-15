@@ -1,12 +1,17 @@
-"""Single-comment inference -- useful for qualitative spot-checks during
-development, and as the reference implementation for the future FastAPI
-endpoint (api/main.py, not yet built).
+"""Single-comment or batch inference -- useful for qualitative spot-checks
+during development, and as the reference implementation for the future
+FastAPI endpoint (api/main.py, not yet built).
 
-Usage:
+Usage (single comment):
   python -m src.infer --model baseline --checkpoint checkpoints/baseline.pt \
       --text "Pin trâu, camera đẹp nhưng giá hơi cao"
+
+Usage (batch, e.g. a CSV of unlabeled comments with a "comment" column):
+  python -m src.infer --model fused --checkpoint checkpoints/fused.pt \
+      --input_file new_comments.csv --output_file predictions.csv
 """
 import argparse
+import csv
 import torch
 
 from .data.labels import ASPECTS, ID_TO_POLARITY
@@ -36,9 +41,18 @@ def main():
     ap.add_argument("--model", choices=["baseline", "fused"], required=True)
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--encoder", default="vinai/phobert-base")
-    ap.add_argument("--text", required=True)
+    ap.add_argument("--text", default=None, help="single-comment mode")
+    ap.add_argument("--input_file", default=None,
+                     help="batch mode: CSV with a 'comment' column")
+    ap.add_argument("--output_file", default=None,
+                     help="batch mode: where to write predictions CSV")
     ap.add_argument("--max_len", type=int, default=256)
     args = ap.parse_args()
+
+    if args.text is None and args.input_file is None:
+        raise ValueError("pass either --text (single comment) or --input_file (batch CSV)")
+    if args.input_file and not args.output_file:
+        raise ValueError("--input_file requires --output_file")
 
     from transformers import AutoTokenizer
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -52,12 +66,34 @@ def main():
     model.load_state_dict(torch.load(args.checkpoint, map_location=device))
     model.eval()
 
-    result = predict(args.text, model, tok, device, is_fused, args.max_len)
-    print(f"Text: {args.text}")
-    if not result:
-        print("No aspects detected.")
-    for aspect, polarity in result.items():
-        print(f"  {aspect:12s} -> {polarity}")
+    if args.text is not None:
+        result = predict(args.text, model, tok, device, is_fused, args.max_len)
+        print(f"Text: {args.text}")
+        if not result:
+            print("No aspects detected.")
+        for aspect, polarity in result.items():
+            print(f"  {aspect:12s} -> {polarity}")
+        return
+
+    # batch mode
+    with open(args.input_file, encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    if not rows or "comment" not in rows[0]:
+        raise ValueError("--input_file must be a CSV with a 'comment' column")
+
+    out_rows = []
+    for row in rows:
+        result = predict(row["comment"], model, tok, device, is_fused, args.max_len)
+        out_row = {"comment": row["comment"]}
+        for aspect in ASPECTS:
+            out_row[aspect] = result.get(aspect, "none")
+        out_rows.append(out_row)
+
+    with open(args.output_file, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["comment"] + ASPECTS)
+        writer.writeheader()
+        writer.writerows(out_rows)
+    print(f"Wrote {len(out_rows)} predictions to {args.output_file}")
 
 
 if __name__ == "__main__":

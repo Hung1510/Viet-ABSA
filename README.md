@@ -27,6 +27,7 @@ anything in `train_fused.py`.
 ```
 viet-absa/
 ├── config/default.yaml       # all hyperparams in one place
+├── environment.yaml           # Conda env (alternative to requirements.txt)
 ├── data/raw/{Train,Dev,Test}.csv   # UIT-ViSFD, verified clean (no dupes, no leakage)
 ├── requirements.txt
 ├── smoke_test.py              # local sanity check, no GPU/download needed
@@ -38,16 +39,20 @@ viet-absa/
 │   │   ├── labels.py            # aspect/polarity schema + label parsing
 │   │   ├── preprocess.py        # normalization + PhoBERT word segmentation
 │   │   ├── dataset.py           # torch Dataset (+ char ids, + augmentation)
-│   │   └── perturb.py           # typo / tone-drop / teencode augmentation
+│   │   ├── perturb.py           # typo / tone-drop / teencode augmentation
+│   │   └── teencode_map.json    # teencode substitution dictionary
 │   ├── models/
 │   │   ├── baseline.py          # PhoBERT-only model
 │   │   ├── char_cnn.py          # char-CNN branch
 │   │   └── fused.py             # PhoBERT + char-CNN fusion
-│   ├── evaluate.py              # metrics (aspect_f1, polarity_f1, per-aspect)
+│   ├── evaluate.py              # metrics + confusion matrix plotting
+│   ├── evaluate_robustness.py   # clean vs perturbed comparison, severity sweep, bootstrap significance
+│   ├── analyze_errors.py        # dumps misclassified examples for weak aspects
+│   ├── plot_curves.py           # training curves from a manifest
+│   ├── run_ablation.py          # runs all 4 ablation configs, builds comparison table
 │   ├── train.py                 # train baseline
-│   ├── train_fused.py           # train fused model + robustness eval
-│   ├── evaluate_robustness.py   # compare any saved checkpoint's clean vs perturbed F1
-│   └── infer.py                 # single-comment inference
+│   ├── train_fused.py           # train fused model (+ --no_char_cnn / --no_aug ablation flags)
+│   └── infer.py                 # single-comment or batch inference
 └── checkpoints/                # created on first training run
 ```
 
@@ -189,6 +194,90 @@ cat checkpoints/fused_manifest.json
 Each contains the exact args used and the full per-epoch history — this is
 your source of truth for any table or plot in the paper, so you don't need
 to re-scrape terminal output.
+
+---
+
+## Additional tooling (build after steps 1-6 above look reasonable)
+
+These depend on having real trained checkpoints to be meaningful — running
+them against an untrained/undertrained model just produces noise, not
+insight. Build order: get a real baseline + fused checkpoint first, then use
+these.
+
+### Training curve plots
+
+```bash
+python -m src.plot_curves --manifest checkpoints/baseline_manifest.json --out_dir figures/baseline
+python -m src.plot_curves --manifest checkpoints/fused_manifest.json --out_dir figures/fused
+```
+Produces `loss.png`, `aspect_f1.png`, `polarity_f1.png` per run.
+
+### Confusion matrices
+
+`src/evaluate.py` now exposes `plot_confusion_matrix(preds, labels, out_path, aspect=None)`.
+Pool all aspects, or pass `aspect="STORAGE"` to inspect a single one — useful
+for checking whether a weak aspect is being systematically over-predicted as
+one polarity rather than just noisy.
+
+### Error analysis
+
+```bash
+python -m src.analyze_errors --model fused --checkpoint checkpoints/fused.pt \
+    --f1_threshold 50 --out errors.csv
+```
+Finds aspects with per-aspect F1 below the threshold and dumps every
+misclassified test example (with the actual comment text) to CSV for manual
+inspection.
+
+### Robustness: severity sweep, per-aspect delta, statistical significance
+
+Single-level check (same as before):
+```bash
+python -m src.evaluate_robustness --model baseline --checkpoint checkpoints/baseline.pt
+```
+
+Severity sweep with a curve chart (`--perturb_level` takes 0-1, higher =
+more aggressive typo/tone-drop/teencode):
+```bash
+python -m src.evaluate_robustness --model fused --checkpoint checkpoints/fused.pt \
+    --perturb_level 0.1 0.3 0.5 0.7 0.9 --curve_out figures/robustness_curve.png
+```
+
+Statistical comparison between two checkpoints (the actual "does the
+char-CNN help" test) — paired bootstrap over the test set, reports whether
+the fused model's robustness delta is significantly smaller than the
+baseline's:
+```bash
+python -m src.evaluate_robustness --model fused --checkpoint checkpoints/fused.pt \
+    --compare_model baseline --compare_checkpoint checkpoints/baseline.pt \
+    --bootstrap --n_bootstrap 1000
+```
+Reports a p-value; only claim "statistically significant improvement" in the
+paper if it comes back below 0.05. If it doesn't, that's a real result too —
+don't force it.
+
+### Ablation study
+
+`train_fused.py` now takes `--no_char_cnn` (PhoBERT + augmentation only) and
+`--no_aug` (fused architecture, no train-time augmentation) so you can
+isolate each component's contribution:
+
+```bash
+python -m src.run_ablation --config config/default.yaml --out_table ablation_results.md
+```
+Trains all 4 configs (full / no_char_cnn / no_aug / neither = baseline) and
+writes a Markdown comparison table. **This runs 4 full training loops** —
+budget GPU time accordingly, or pass `--epochs 3` first to smoke-test the
+loop before committing to a full run.
+
+### Batch inference
+
+```bash
+python -m src.infer --model fused --checkpoint checkpoints/fused.pt \
+    --input_file new_comments.csv --output_file predictions.csv
+```
+`new_comments.csv` needs a `comment` column; output has one column per
+aspect. Useful for running the model over a batch of real unlabeled reviews.
 
 ---
 
